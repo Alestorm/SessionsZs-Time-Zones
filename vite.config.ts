@@ -5,7 +5,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
   return {
-    base:"{repName}",
+    base:"/SessionsZs-Time-Zones/",
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
