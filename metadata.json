@@ -1,0 +1,6 @@
+{
+  "name": "Trading Box Session Calculator",
+  "description": "Calculadora de horarios para la estrategia de la caja de TradingView según zona horaria y horario de verano de los mercados.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
