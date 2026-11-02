@@ -242,34 +242,28 @@ export function getSessionProgress(params: {
   const openMins = timeStringToMinutes(boxCalculation.marketOpenLocal);
   const boxEndMins = timeStringToMinutes(boxCalculation.boxEndLocal);
 
-  // Normalizar diferencias circulares de tiempo dentro de 24 horas (1440 minutos)
+  // Minutos transcurridos desde el inicio exacto de la caja (0 a 1439)
   const diffFromBoxStart = (nowLocalMinutes - boxStartMins + 1440) % 1440;
-  const boxDuration = (boxEndMins - boxStartMins + 1440) % 1440; // 90 min normalmente
 
-  let isInside = false;
-  if (boxEndMins > boxStartMins) {
-    isInside = nowLocalMinutes >= boxStartMins && nowLocalMinutes <= boxEndMins;
-  } else {
-    // Si cruza medianoche (ej: 23:30 a 01:00)
-    isInside = nowLocalMinutes >= boxStartMins || nowLocalMinutes <= boxEndMins;
-  }
+  // La caja siempre dura exactamente 90 minutos (60m pre + 30m post)
+  const isInside = diffFromBoxStart >= 0 && diffFromBoxStart <= 90;
 
   let status: SessionProgressStatus = 'BEFORE_BOX';
   let boxProgressPercent = 0;
 
   if (isInside) {
-    // Calcular porcentaje de 0 a 100 dentro de los 90 min de la caja
-    boxProgressPercent = Math.min(100, Math.max(0, (diffFromBoxStart / boxDuration) * 100));
+    // Progreso exacto de 0 a 100% dentro de los 90 minutos
+    boxProgressPercent = Math.min(100, Math.max(0, (diffFromBoxStart / 90) * 100));
 
-    // Verificar si está antes o después de la campana de apertura
-    const diffFromOpen = (nowLocalMinutes - openMins + 1440) % 1440;
-    if (diffFromOpen < 720 && nowLocalMinutes >= openMins) {
-      status = 'IN_BOX_POST_OPEN';
-    } else {
+    // Si pasaron menos de 60 minutos, estamos en fase de pre-apertura
+    if (diffFromBoxStart < 60) {
       status = 'IN_BOX_PRE_OPEN';
+    } else {
+      // Entre 60m y 90m estamos en fase de post-apertura (ruptura activa)
+      status = 'IN_BOX_POST_OPEN';
     }
   } else {
-    // Fuera de rango: determinar si fue antes de la caja o después de ella en el ciclo de 24 horas
+    // Fuera de rango: determinar si es antes de la caja de hoy o después de que cerró
     const minsUntilStart = (boxStartMins - nowLocalMinutes + 1440) % 1440;
     if (minsUntilStart <= 720) {
       status = 'BEFORE_BOX';

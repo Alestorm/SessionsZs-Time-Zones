@@ -17,11 +17,15 @@ import {
   Layers,
   Sparkles,
   Sliders,
-  Play,
   RotateCcw,
   Timer,
   AlertCircle,
   Radio,
+  Filter,
+  Settings2,
+  Plus,
+  Minus,
+  Activity,
 } from 'lucide-react';
 import {
   TIMEZONE_REGISTRY,
@@ -36,6 +40,7 @@ import {
   getSessionProgress,
   parseOffsetToMinutes,
   formatMinutesToTime,
+  timeStringToMinutes,
   isUsDst,
   isEuropeDst,
 } from './utils/timeCalculations';
@@ -52,20 +57,27 @@ function formatGmtPrefix(offset: UtcOffset): string {
 }
 
 export default function App() {
-  // Estado de selección
+  // Estado de selección principal del usuario
   const [selectedTimezoneKey, setSelectedTimezoneKey] =
-    useState<TimezoneKey>('AMERICA_LA_PAZ'); // Por defecto Bolivia como en el ejemplo del usuario (GMT-4)
+    useState<TimezoneKey>('AMERICA_LA_PAZ'); // Por defecto Bolivia (GMT-4)
   const [userDstActive, setUserDstActive] = useState<boolean>(false);
   const [selectedMarketId, setSelectedMarketId] = useState<string>('NYSE_NASDAQ');
-  const [marketSeason, setMarketSeason] = useState<'dst' | 'standard'>('standard'); // Inicializado en estándar (GMT-5 para NY) para probar fácilmente
+  const [marketSeason, setMarketSeason] = useState<'dst' | 'standard'>('standard');
   const [copied, setCopied] = useState<boolean>(false);
 
-  // Reloj en tiempo real (UTC y Local)
+  // Reloj en tiempo real
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
-  // Modo Simulación de Hora para probar fácilmente 08:00, 10:00, 12:00
+  // Modo Simulación de Hora
   const [isSimulationMode, setIsSimulationMode] = useState<boolean>(false);
-  const [simulatedMinutes, setSimulatedMinutes] = useState<number>(600); // 10:00 AM por defecto
+  const [simulatedMinutes, setSimulatedMinutes] = useState<number>(600); // 10:00 AM inicial
+
+  // Estado para la tabla de Resumen Multi-Mercado
+  const [tableTimezoneMode, setTableTimezoneMode] = useState<'SYNC_USER' | 'CUSTOM'>('SYNC_USER');
+  const [customTableTimezoneKey, setCustomTableTimezoneKey] = useState<TimezoneKey>('AMERICA_NEW_YORK');
+  const [customTableDst, setCustomTableDst] = useState<boolean>(false);
+  const [tableMarketCategory, setTableMarketCategory] = useState<'EXCHANGES' | 'FOREX' | 'ALL'>('EXCHANGES');
+  const [tableManualHourOffset, setTableManualHourOffset] = useState<number>(0); // Horas manuales (+1h, -1h, etc.)
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -124,7 +136,7 @@ export default function App() {
     [effectiveUserOffset]
   );
 
-  // Cálculo de los horarios de la caja
+  // Cálculo de los horarios de la caja para el mercado activo
   const boxCalculation = useMemo(() => {
     return calculateBoxSchedule({
       userTimezone,
@@ -134,7 +146,70 @@ export default function App() {
     });
   }, [userTimezone, userDstActive, selectedMarket, marketSeason]);
 
-  // Cálculo de estado y progreso en tiempo real (o simulado)
+  // Minutos de apertura del mercado activo en la hora local del usuario
+  const marketOpenMinutes = useMemo(() => {
+    return timeStringToMinutes(boxCalculation.marketOpenLocal);
+  }, [boxCalculation.marketOpenLocal]);
+
+  // Presets dinámicos del simulador de horas adaptados AL MERCADO Y ZONA SELECCIONADOS
+  const dynamicPresets = useMemo(() => {
+    // 1. 1h 30m antes de la apertura (Fuera de rango)
+    const tBefore = (marketOpenMinutes - 90 + 1440) % 1440;
+    // 2. 30m antes de la apertura (En rango · Pre-apertura)
+    const tPreOpen = (marketOpenMinutes - 30 + 1440) % 1440;
+    // 3. Campana de apertura oficial (0m)
+    const tOpen = marketOpenMinutes;
+    // 4. 15m después de la apertura (En rango · Post-apertura)
+    const tPostOpen = (marketOpenMinutes + 15 + 1440) % 1440;
+    // 5. 1h 30m después de la apertura (Fuera de rango · Caja cerrada)
+    const tAfter = (marketOpenMinutes + 90 + 1440) % 1440;
+
+    return [
+      {
+        minutes: tBefore,
+        timeFormatted: formatMinutesToTime(tBefore),
+        categoryTag: 'PRE-CAJA',
+        shortLabel: '-1h 30m',
+        statusType: 'Fuera de rango',
+        colorTheme: 'amber',
+      },
+      {
+        minutes: tPreOpen,
+        timeFormatted: formatMinutesToTime(tPreOpen),
+        categoryTag: 'PRE-MERCADO',
+        shortLabel: '-30m',
+        statusType: 'En rango (Fase 1)',
+        colorTheme: 'cyan',
+      },
+      {
+        minutes: tOpen,
+        timeFormatted: formatMinutesToTime(tOpen),
+        categoryTag: 'CAMPANA 0m',
+        shortLabel: 'Apertura',
+        statusType: 'Campana Oficial',
+        colorTheme: 'emerald',
+      },
+      {
+        minutes: tPostOpen,
+        timeFormatted: formatMinutesToTime(tPostOpen),
+        categoryTag: 'POST-APERTURA',
+        shortLabel: '+15m',
+        statusType: 'En rango (Fase 2)',
+        colorTheme: 'indigo',
+      },
+      {
+        minutes: tAfter,
+        timeFormatted: formatMinutesToTime(tAfter),
+        categoryTag: 'POST-CAJA',
+        shortLabel: '+1h 30m',
+        statusType: 'Fuera de rango',
+        colorTheme: 'slate',
+      },
+    ];
+  }, [marketOpenMinutes]);
+
+  // Si cambiamos de mercado o zona horaria mientras estamos en simulación,
+  // podemos mantener la hora elegida o adaptarla
   const sessionProgress = useMemo(() => {
     return getSessionProgress({
       boxCalculation,
@@ -171,8 +246,11 @@ export default function App() {
     return `${h}:${m}:${s}`;
   }, [currentTime]);
 
-  // Hora local en vivo según la zona horaria seleccionada
+  // Hora local en vivo o simulada
   const userLocalLiveTime = useMemo(() => {
+    if (isSimulationMode) {
+      return `${formatMinutesToTime(simulatedMinutes)} (Simulada)`;
+    }
     const utcHours = currentTime.getUTCHours();
     const utcMins = currentTime.getUTCMinutes();
     const utcSecs = currentTime.getUTCSeconds();
@@ -181,9 +259,9 @@ export default function App() {
     const lh = Math.floor(localTotalMinutes / 60);
     const lm = Math.floor(localTotalMinutes % 60);
     return `${lh.toString().padStart(2, '0')}:${lm.toString().padStart(2, '0')}:${utcSecs.toString().padStart(2, '0')}`;
-  }, [currentTime, userOffsetMinutes]);
+  }, [currentTime, userOffsetMinutes, isSimulationMode, simulatedMinutes]);
 
-  // Horas de diferencia respecto a UTC (ej: -4 horas, +3 horas, -6 horas)
+  // Horas de diferencia respecto a UTC
   const utcDiffText = useMemo(() => {
     if (userOffsetMinutes === 0) return '0 horas';
     const sign = userOffsetMinutes > 0 ? '+' : '-';
@@ -221,27 +299,82 @@ export default function App() {
     return map;
   }, [userTimezone, userDstActive, marketSeason]);
 
-  // Comparador de las 3 bolsas principales para la sección de vista rápida
-  const quickComparison = useMemo(() => {
-    const mainExchanges = [
-      ALL_MARKETS.find((m) => m.id === 'NYSE_NASDAQ')!,
-      ALL_MARKETS.find((m) => m.id === 'LSE')!,
-      ALL_MARKETS.find((m) => m.id === 'TSE')!,
-    ].filter(Boolean);
+  // ─── CÁLCULOS DINÁMICOS PARA LA TABLA MULTI-MERCADO ───
+  // Zona horaria que rige la tabla: sincronizada con la del usuario o manual personalizada
+  const effectiveTableTimezone = useMemo(() => {
+    if (tableTimezoneMode === 'SYNC_USER') {
+      return userTimezone;
+    }
+    return TIMEZONE_REGISTRY[customTableTimezoneKey] || userTimezone;
+  }, [tableTimezoneMode, userTimezone, customTableTimezoneKey]);
 
-    return mainExchanges.map((ex) => {
+  const effectiveTableDst = useMemo(() => {
+    if (tableTimezoneMode === 'SYNC_USER') {
+      return userDstActive;
+    }
+    return customTableDst;
+  }, [tableTimezoneMode, userDstActive, customTableDst]);
+
+  const effectiveTableOffsetStr = useMemo(() => {
+    return effectiveTableTimezone.observesDst && effectiveTableDst && effectiveTableTimezone.dstOffset
+      ? effectiveTableTimezone.dstOffset
+      : effectiveTableTimezone.standardOffset;
+  }, [effectiveTableTimezone, effectiveTableDst]);
+
+  const effectiveTableOffsetMinutes = useMemo(() => {
+    return parseOffsetToMinutes(effectiveTableOffsetStr);
+  }, [effectiveTableOffsetStr]);
+
+  // Lista de mercados evaluados dinámicamente para la tabla Multi-Mercado
+  const multiMarketRows = useMemo(() => {
+    const filteredMarkets = ALL_MARKETS.filter((m) => {
+      if (tableMarketCategory === 'EXCHANGES') return m.category === 'EXCHANGE';
+      if (tableMarketCategory === 'FOREX') return m.category === 'FOREX';
+      return true;
+    });
+
+    // Minutos actuales en la zona de la tabla (con posible desplazamiento manual)
+    const tableCurrentMinutes = isSimulationMode
+      ? simulatedMinutes
+      : (() => {
+          const utcTotal = currentTime.getUTCHours() * 60 + currentTime.getUTCMinutes() + currentTime.getUTCSeconds() / 60;
+          return ((utcTotal + effectiveTableOffsetMinutes + tableManualHourOffset * 60) % 1440 + 1440) % 1440;
+        })();
+
+    return filteredMarkets.map((market) => {
+      // Cálculo del horario de la caja en la zona de la tabla
       const calc = calculateBoxSchedule({
-        userTimezone,
-        userDstActive,
-        market: ex,
-        marketSeason: ex.hasDst ? marketSeason : 'standard',
+        userTimezone: effectiveTableTimezone,
+        userDstActive: effectiveTableDst,
+        market,
+        marketSeason: market.hasDst ? marketSeason : 'standard',
       });
+
+      // Progreso en tiempo real para esta bolsa en particular
+      const progress = getSessionProgress({
+        boxCalculation: calc,
+        userOffsetMinutes: effectiveTableOffsetMinutes,
+        simulatedTimeMinutes: tableCurrentMinutes,
+        currentDate: currentTime,
+      });
+
       return {
-        exchange: ex,
+        market,
         calc,
+        progress,
       };
     });
-  }, [userTimezone, userDstActive, marketSeason]);
+  }, [
+    tableMarketCategory,
+    effectiveTableTimezone,
+    effectiveTableDst,
+    marketSeason,
+    isSimulationMode,
+    simulatedMinutes,
+    currentTime,
+    effectiveTableOffsetMinutes,
+    tableManualHourOffset,
+  ]);
 
   return (
     <div className="min-h-screen bg-[#080c14] text-slate-100 flex flex-col font-['Plus_Jakarta_Sans',sans-serif]">
@@ -279,7 +412,11 @@ export default function App() {
 
             {/* Box 2: Hora Local Seleccionada (GMT-X) */}
             <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-lg bg-slate-900/90 border border-cyan-800/60 shadow-sm shadow-cyan-950/30 shrink-0">
-              <div className="w-2 h-2 rounded-full bg-cyan-400" />
+              <div
+                className={`w-2 h-2 rounded-full ${
+                  isSimulationMode ? 'bg-amber-400 animate-pulse' : 'bg-cyan-400'
+                }`}
+              />
               <span className="text-slate-400 hidden sm:inline">
                 Hora Local ({formatGmtPrefix(effectiveUserOffset)}):
               </span>
@@ -291,7 +428,7 @@ export default function App() {
               </span>
             </div>
 
-            {/* Calendario (Pantallas medianas y grandes) */}
+            {/* Calendario */}
             <div className="hidden xl:flex items-center gap-1.5 text-slate-400 shrink-0">
               <Calendar className="w-3.5 h-3.5" />
               <span>{dateFormatted}</span>
@@ -326,7 +463,7 @@ export default function App() {
           {/* Left Column: Configuration Controls (lg:col-span-7) */}
           <div className="lg:col-span-7 space-y-5">
             
-            {/* Box 1: Zona Horaria del Usuario con [GMT-X] al principio */}
+            {/* Box 1: Zona Horaria del Usuario */}
             <div className="p-5 rounded-xl bg-[#0d1322] border border-slate-800/80 shadow-lg shadow-black/20 space-y-4">
               <div className="flex items-center justify-between pb-3 border-b border-slate-800/60">
                 <div className="flex items-center gap-2">
@@ -340,7 +477,7 @@ export default function App() {
                 </span>
               </div>
 
-              {/* Selector de zona con [GMT-X] al principio para fácil lectura */}
+              {/* Selector de zona con [GMT-X] al principio */}
               <div className="space-y-1.5">
                 <span className="text-xs text-slate-400">Selecciona tu huso horario (ordenado con prefijo GMT):</span>
                 <div className="relative">
@@ -597,55 +734,95 @@ export default function App() {
                 </span>
               </div>
 
-              {/* Form fields replicating the user's TradingView indicator interface */}
-              <div className="space-y-4">
+              {/* Cajas informativas con los parámetros exactos a ingresar en TradingView */}
+              <div className="space-y-3">
                 
-                {/* Field 1: Zona Horaria */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <label className="text-xs font-medium text-slate-300">
-                    Zona Horaria
-                  </label>
-                  <div className="w-full sm:w-44 px-3 py-2 bg-slate-950 border border-slate-700/80 rounded-md text-xs font-mono-numbers text-slate-200 flex items-center justify-between">
-                    <span>{boxCalculation.userOffsetFormatted}</span>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
-                  </div>
-                </div>
-
-                {/* Field 2: Etiqueta de la Sesión */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <label className="text-xs font-medium text-slate-300">
-                    Etiqueta de la Sesión
-                  </label>
-                  <div className="w-full sm:w-44 px-3 py-2 bg-slate-950 border border-slate-700/80 rounded-md text-xs font-semibold text-cyan-300 flex items-center justify-between">
-                    <span>{selectedMarket.tradingViewLabel}</span>
-                    <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
-                  </div>
-                </div>
-
-                {/* Field 3: Intervalo Manual / Ajuste Desfase (Exact image layout) */}
-                <div className="space-y-2 pt-1">
-                  <div className="flex items-center justify-between text-xs font-medium text-slate-300">
-                    <span>Intervalo Manual / Ajuste Desfase</span>
-                    <span className="text-[11px] text-slate-400 font-mono-numbers">(60m antes — 30m después)</span>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {/* Start Time Box */}
-                    <div className="flex-1 px-3 py-2.5 bg-slate-950 border border-cyan-500/50 rounded-lg flex items-center justify-between shadow-inner">
-                      <span className="text-base font-bold text-white font-mono-numbers tracking-wider">
-                        {boxCalculation.boxStartLocal}
+                {/* Caja Informativa 1: Zona Horaria */}
+                <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between gap-3 hover:border-slate-700 transition-colors">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-cyan-950/80 border border-cyan-800/60 flex items-center justify-center text-cyan-400 shrink-0">
+                      <Globe className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-xs font-semibold text-slate-200 block">
+                        Zona Horaria
                       </span>
-                      <Clock className="w-4 h-4 text-cyan-400" />
+                      <span className="text-[10px] text-slate-500 block">
+                        Parámetro de huso en el indicador
+                      </span>
+                    </div>
+                  </div>
+                  <div className="px-3.5 py-1.5 bg-slate-900 border border-cyan-500/40 rounded-lg text-xs font-mono-numbers text-cyan-300 font-bold tracking-wide shadow-inner flex items-center gap-1.5">
+                    <span>{boxCalculation.userOffsetFormatted}</span>
+                    <span className="text-[10px] text-slate-400 font-normal">({formatGmtPrefix(effectiveUserOffset)})</span>
+                  </div>
+                </div>
+
+                {/* Caja Informativa 2: Etiqueta de la Sesión */}
+                <div className="p-3 rounded-lg bg-slate-950 border border-slate-800 flex items-center justify-between gap-3 hover:border-slate-700 transition-colors">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-cyan-950/80 border border-cyan-800/60 flex items-center justify-center text-cyan-400 shrink-0">
+                      <Layers className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-xs font-semibold text-slate-200 block">
+                        Etiqueta de la Sesión
+                      </span>
+                      <span className="text-[10px] text-slate-500 block">
+                        Nombre de la sesión para el script
+                      </span>
+                    </div>
+                  </div>
+                  <div className="px-3.5 py-1.5 bg-slate-900 border border-cyan-500/40 rounded-lg text-xs font-semibold text-white flex items-center gap-2 shadow-inner">
+                    <span className="text-sm">{selectedMarket.countryFlag}</span>
+                    <span className="text-cyan-300 font-bold font-mono-numbers">{selectedMarket.tradingViewLabel}</span>
+                  </div>
+                </div>
+
+                {/* Caja Informativa 3: Intervalo Manual / Ajuste Desfase */}
+                <div className="p-3.5 rounded-lg bg-slate-950 border border-slate-800 space-y-2.5">
+                  <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-cyan-950/80 border border-cyan-800/60 flex items-center justify-center text-cyan-400 shrink-0">
+                        <Clock className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <span className="text-xs font-semibold text-slate-200 block">
+                          Intervalo Manual / Ajuste Desfase
+                        </span>
+                        <span className="text-[10px] text-slate-500 block">
+                          Valores exactos de apertura y cierre de caja
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-[10px] text-cyan-400 font-mono-numbers px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60">
+                      90 min (-60m / +30m)
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-1">
+                    {/* Start Time Box */}
+                    <div className="flex-1 px-3.5 py-2.5 bg-slate-900 border border-cyan-500/50 rounded-lg flex items-center justify-between shadow-inner">
+                      <div>
+                        <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-semibold">Abre Caja</span>
+                        <span className="text-base font-bold text-white font-mono-numbers tracking-wider">
+                          {boxCalculation.boxStartLocal}
+                        </span>
+                      </div>
+                      <Clock className="w-4 h-4 text-cyan-400 shrink-0" />
                     </div>
 
-                    <span className="text-slate-400 font-bold">—</span>
+                    <span className="text-slate-500 font-bold text-base">—</span>
 
                     {/* End Time Box */}
-                    <div className="flex-1 px-3 py-2.5 bg-slate-950 border border-cyan-500/50 rounded-lg flex items-center justify-between shadow-inner">
-                      <span className="text-base font-bold text-white font-mono-numbers tracking-wider">
-                        {boxCalculation.boxEndLocal}
-                      </span>
-                      <Clock className="w-4 h-4 text-cyan-400" />
+                    <div className="flex-1 px-3.5 py-2.5 bg-slate-900 border border-cyan-500/50 rounded-lg flex items-center justify-between shadow-inner">
+                      <div>
+                        <span className="text-[9px] text-slate-400 uppercase tracking-wider block font-semibold">Cierra Caja</span>
+                        <span className="text-base font-bold text-white font-mono-numbers tracking-wider">
+                          {boxCalculation.boxEndLocal}
+                        </span>
+                      </div>
+                      <Clock className="w-4 h-4 text-cyan-400 shrink-0" />
                     </div>
                   </div>
                 </div>
@@ -737,129 +914,173 @@ export default function App() {
 
         </div>
 
-        {/* ─── REAL-TIME TIMELINE & PROGRESS MONITOR ─── */}
-        <div className="p-5 sm:p-6 rounded-xl bg-[#0d1322] border border-slate-800/80 space-y-5">
+        {/* ─── REAL-TIME TIMELINE & DYNAMIC PROGRESS MONITOR ─── */}
+        <div className="p-5 sm:p-6 rounded-xl bg-[#0d1322] border border-slate-800/80 space-y-6">
           
-          {/* Header of Timeline with Live Status & Countdowns */}
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-2 border-b border-slate-800/70">
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-bold text-white">
-                  Línea Temporal de la Estrategia (Timeline 90 min)
+          {/* Header of Timeline with Live Status & Evaluated Clock */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h2 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-cyan-400" />
+                  Monitor de Sesión & Timeline (90 min)
                 </h2>
-                {/* Live vs Simulation indicator */}
                 {isSimulationMode ? (
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800 font-semibold flex items-center gap-1">
-                    <Sliders className="w-3 h-3" />
-                    MODO SIMULACIÓN
+                  <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30 font-semibold flex items-center gap-1.5 shadow-sm">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                    SIMULACIÓN ACTIVA
                   </span>
                 ) : (
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-400 border border-emerald-800 font-semibold flex items-center gap-1">
+                  <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold flex items-center gap-1.5 shadow-sm">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    TIEMPO REAL
+                    TIEMPO REAL EN VIVO
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Progreso y contador para la campana de apertura y la ventana de la caja
+              <p className="text-xs text-slate-400">
+                Monitoreo en vivo de la ventana de acumulación y apertura para <strong className="text-slate-200">{selectedMarket.tradingViewLabel}</strong>
               </p>
             </div>
 
-            {/* Current local time display */}
-            <div className="flex items-center gap-2 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 self-start md:self-auto">
-              <Clock className="w-3.5 h-3.5 text-cyan-400" />
-              <span className="text-xs text-slate-400">Tu hora local ({formatGmtPrefix(effectiveUserOffset)}):</span>
-              <span className="font-mono-numbers font-bold text-cyan-300 text-sm">
-                {sessionProgress.userNowTimeFormatted}
-              </span>
-            </div>
-          </div>
-
-          {/* Real-time Status Card & Countdown Banner */}
-          <div
-            className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-colors ${
-              sessionProgress.status === 'IN_BOX_PRE_OPEN'
-                ? 'bg-cyan-950/30 border-cyan-500/50 text-cyan-200'
-                : sessionProgress.status === 'IN_BOX_POST_OPEN'
-                ? 'bg-emerald-950/30 border-emerald-500/50 text-emerald-200'
-                : 'bg-slate-950/80 border-slate-800 text-slate-300'
-            }`}
-          >
-            {/* Left: Status text */}
-            <div className="flex items-start gap-3">
-              <div
-                className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 mt-0.5 ${
-                  sessionProgress.isInsideBox
-                    ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
-                    : 'bg-slate-800 text-slate-400'
-                }`}
-              >
-                {sessionProgress.isInsideBox ? (
-                  <Radio className="w-5 h-5 animate-pulse" />
-                ) : (
-                  <AlertCircle className="w-5 h-5" />
-                )}
-              </div>
-              <div className="space-y-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span
-                    className={`text-xs uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
-                      sessionProgress.isInsideBox
-                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
-                        : 'bg-slate-800 text-slate-400 border border-slate-700'
-                    }`}
-                  >
-                    {sessionProgress.isInsideBox ? '🟢 DENTRO DE LA CAJA' : '⏸️ FUERA DE RANGO'}
-                  </span>
-                  <span className="text-xs font-semibold text-slate-200">
-                    {sessionProgress.statusLabel}
+            {/* Evaluated Time Badge & Reset Button */}
+            <div className="flex items-center gap-2.5 self-start sm:self-auto">
+              <div className="flex items-center gap-2 bg-slate-950 px-3.5 py-2 rounded-lg border border-slate-800 shadow-sm">
+                <Clock className="w-4 h-4 text-cyan-400" />
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-slate-400 leading-none">Hora evaluada ({formatGmtPrefix(effectiveUserOffset)}):</span>
+                  <span className="font-mono-numbers font-bold text-cyan-300 text-sm leading-tight mt-0.5">
+                    {sessionProgress.userNowTimeFormatted}
                   </span>
                 </div>
-                <p className="text-xs text-slate-400">
-                  {sessionProgress.isInsideBox
-                    ? `Progreso de la caja: ${Math.round(sessionProgress.boxProgressPercent)}% completado`
-                    : `La ventana de la caja opera exclusivamente entre ${boxCalculation.boxStartLocal} y ${boxCalculation.boxEndLocal}.`}
-                </p>
               </div>
-            </div>
-
-            {/* Right: Real-time countdown to Open Bell or Box */}
-            <div className="flex flex-col sm:items-end justify-center bg-slate-900/90 border border-slate-800/80 px-4 py-2.5 rounded-lg shrink-0">
-              <span className="text-[11px] text-slate-400 flex items-center gap-1 font-medium">
-                <Timer className="w-3.5 h-3.5 text-cyan-400" />
-                {sessionProgress.primaryCountdownLabel}
-              </span>
-              <span className="text-xl font-bold font-mono-numbers text-cyan-300 tracking-wide">
-                {sessionProgress.primaryCountdownValue}
-              </span>
-              {sessionProgress.status === 'BEFORE_BOX' && (
-                <span className="text-[10px] text-slate-500 font-mono-numbers mt-0.5">
-                  Apertura oficial (0m): en {sessionProgress.countdownToOpenText}
-                </span>
+              {isSimulationMode && (
+                <button
+                  type="button"
+                  onClick={() => setIsSimulationMode(false)}
+                  title="Restablecer a la hora real en vivo"
+                  className="px-2.5 py-2 rounded-lg bg-slate-900 border border-slate-700 hover:bg-slate-800 text-cyan-400 text-xs font-medium flex items-center gap-1.5 cursor-pointer transition-colors shadow-sm"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span className="hidden md:inline">En Vivo</span>
+                </button>
               )}
             </div>
           </div>
 
-          {/* Interactive Progress Bar Visualization (matches image_d82a8a7c) */}
-          <div className="space-y-3 pt-1">
-            <div className="flex items-center justify-between text-xs text-slate-400">
-              <span>Rango de la caja: <strong className="text-slate-200 font-mono-numbers">{boxCalculation.boxStartLocal}</strong> a <strong className="text-slate-200 font-mono-numbers">{boxCalculation.boxEndLocal}</strong></span>
-              <div className="flex items-center gap-3">
-                <span className="flex items-center gap-1.5 text-slate-300">
-                  <span className="w-2.5 h-2.5 rounded bg-cyan-500" />
-                  <span>Pre-mercado (60m)</span>
+          {/* 3 Balanced Metric Cards: Estado, Campana de Apertura, Contador de la Caja */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+            {/* Card 1: Estado de la Sesión */}
+            <div
+              className={`p-4 rounded-xl border flex flex-col justify-between transition-colors ${
+                sessionProgress.status === 'IN_BOX_PRE_OPEN'
+                  ? 'bg-cyan-950/25 border-cyan-500/40 text-cyan-100'
+                  : sessionProgress.status === 'IN_BOX_POST_OPEN'
+                  ? 'bg-emerald-950/25 border-emerald-500/40 text-emerald-100'
+                  : 'bg-slate-950/70 border-slate-800 text-slate-300'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                  Estado de la Sesión
                 </span>
-                <span className="flex items-center gap-1.5 text-slate-300">
-                  <span className="w-2.5 h-2.5 rounded bg-indigo-500" />
-                  <span>Post-apertura (30m)</span>
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
+                    sessionProgress.isInsideBox
+                      ? sessionProgress.status === 'IN_BOX_PRE_OPEN'
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
+                        : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-slate-800 text-slate-400 border border-slate-700'
+                  }`}
+                >
+                  {sessionProgress.isInsideBox ? '🟢 DENTRO DE LA CAJA' : '⏸️ FUERA DE RANGO'}
+                </span>
+              </div>
+              <div className="my-2.5">
+                <p className="text-sm font-semibold text-white leading-snug">
+                  {sessionProgress.statusLabel}
+                </p>
+              </div>
+              <div className="text-xs text-slate-400 pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                <span>Ventana: <strong className="text-slate-200 font-mono-numbers">{boxCalculation.boxStartLocal} — {boxCalculation.boxEndLocal}</strong></span>
+                {sessionProgress.isInsideBox && (
+                  <span className="text-cyan-300 font-mono-numbers font-medium">
+                    {Math.round(sessionProgress.boxProgressPercent)}% completado
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Card 2: Cuenta Regresiva a la Campana de Apertura Oficial (0m) */}
+            <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                  Campana Oficial (0m)
+                </span>
+                <span className="text-[11px] font-mono-numbers text-cyan-400 font-bold bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-900">
+                  {boxCalculation.marketOpenLocal}
+                </span>
+              </div>
+              <div className="my-2">
+                <span className="text-[11px] text-slate-400 block mb-0.5">Tiempo para apertura oficial:</span>
+                <span className="text-2xl font-bold font-mono-numbers text-white tracking-tight">
+                  {sessionProgress.countdownToOpenText}
+                </span>
+              </div>
+              <div className="text-xs text-slate-400 pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                <span>Bolsa: <strong className="text-slate-300">{selectedMarket.tradingViewLabel}</strong></span>
+                <span className="text-[11px] text-slate-500 font-mono-numbers">
+                  {selectedMarket.localOpenTime} local
                 </span>
               </div>
             </div>
 
-            {/* The Bar Track */}
-            <div className="relative pt-6 pb-2">
-              
-              {/* Needle/Cursor if INSIDE the box */}
+            {/* Card 3: Cuenta Regresiva de la Caja (Inicio o Cierre) */}
+            <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 flex flex-col justify-between">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
+                  Contador de la Caja (90m)
+                </span>
+                <Timer className="w-3.5 h-3.5 text-cyan-400" />
+              </div>
+              <div className="my-2">
+                <span className="text-[11px] text-slate-400 block mb-0.5">
+                  {sessionProgress.primaryCountdownLabel}
+                </span>
+                <span className="text-2xl font-bold font-mono-numbers text-cyan-300 tracking-tight">
+                  {sessionProgress.primaryCountdownValue}
+                </span>
+              </div>
+              <div className="text-xs text-slate-400 pt-2 border-t border-slate-800/80 flex items-center justify-between">
+                <span>Duración: <strong className="text-slate-300">90 min</strong></span>
+                <span className="text-[11px] text-slate-500">
+                  60m pre + 30m post
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Visual Timeline Bar Container */}
+          <div className="p-4 sm:p-5 rounded-xl bg-slate-950/80 border border-slate-800/90 space-y-3.5">
+            {/* Timeline Subheader & Legend */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <span className="text-slate-300 font-medium">
+                Intervalo Total: <strong className="text-white font-mono-numbers">{boxCalculation.boxStartLocal}</strong> a <strong className="text-white font-mono-numbers">{boxCalculation.boxEndLocal}</strong> <span className="text-slate-500">(90 minutos)</span>
+              </span>
+              <div className="flex items-center gap-4 text-xs">
+                <span className="flex items-center gap-1.5 text-slate-300">
+                  <span className="w-2.5 h-2.5 rounded bg-cyan-500" />
+                  <span>Fase 1: Pre-mercado (60m)</span>
+                </span>
+                <span className="flex items-center gap-1.5 text-slate-300">
+                  <span className="w-2.5 h-2.5 rounded bg-indigo-500" />
+                  <span>Fase 2: Post-apertura (30m)</span>
+                </span>
+              </div>
+            </div>
+
+            {/* The Timeline Track Bar */}
+            <div className="relative pt-6 pb-1">
+              {/* Dynamic Needle if Inside Box */}
               {sessionProgress.isInsideBox && (
                 <div
                   className="absolute top-0 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none transition-all duration-300 ease-linear"
@@ -872,294 +1093,464 @@ export default function App() {
                 </div>
               )}
 
-              {/* Main 90-minute Container Bar */}
-              <div className="h-12 w-full bg-slate-950 rounded-xl p-1.5 flex items-stretch border border-slate-800 relative overflow-hidden shadow-inner">
-                
-                {/* Real-time Glowing Fill overlay (if inside box) */}
+              {/* Main Track Bar */}
+              <div className="h-12 w-full bg-slate-900 rounded-xl p-1 flex items-stretch border border-slate-800 relative overflow-hidden shadow-inner">
+                {/* Glow fill if inside */}
                 {sessionProgress.isInsideBox && (
                   <div
-                    className="absolute top-0 bottom-0 left-0 bg-cyan-400/15 border-r-2 border-cyan-400 z-10 transition-all duration-300 ease-linear shadow-[0_0_15px_rgba(34,211,238,0.3)]"
+                    className="absolute top-0 bottom-0 left-0 bg-cyan-400/20 border-r-2 border-cyan-400 z-10 transition-all duration-300 ease-linear shadow-[0_0_15px_rgba(34,211,238,0.4)]"
                     style={{ width: `${sessionProgress.boxProgressPercent}%` }}
                   />
                 )}
 
-                {/* Pre-open Box: 60 minutes (66.6% of 90m) */}
-                <div
-                  className="w-2/3 bg-gradient-to-r from-cyan-600/40 via-cyan-500/50 to-cyan-400/60 rounded-l-lg flex items-center justify-between px-3.5 text-xs font-semibold text-cyan-100 border-r border-white/25 relative"
-                >
+                {/* 60m Pre-market (66.6%) */}
+                <div className="w-2/3 bg-gradient-to-r from-cyan-600/40 via-cyan-500/50 to-cyan-400/60 rounded-l-lg flex items-center justify-between px-3.5 text-xs font-semibold text-cyan-100 border-r border-white/25 relative">
                   <span className="font-mono-numbers font-bold text-sm tracking-wide">
                     {boxCalculation.boxStartLocal}
                   </span>
                   <span className="text-[11px] opacity-80 hidden sm:inline">60 min antes</span>
                 </div>
 
-                {/* Post-open Box: 30 minutes (33.3% of 90m) */}
-                <div
-                  className="w-1/3 bg-gradient-to-r from-indigo-500/50 to-indigo-600/40 rounded-r-lg flex items-center justify-between px-3.5 text-xs font-semibold text-indigo-100 relative"
-                >
+                {/* 30m Post-open (33.3%) */}
+                <div className="w-1/3 bg-gradient-to-r from-indigo-500/50 to-indigo-600/40 rounded-r-lg flex items-center justify-between px-3.5 text-xs font-semibold text-indigo-100 relative">
                   <span className="text-[11px] opacity-80 hidden sm:inline">30 min después</span>
                   <span className="font-mono-numbers font-bold text-sm tracking-wide ml-auto">
                     {boxCalculation.boxEndLocal}
                   </span>
                 </div>
 
-                {/* Exact Open Bell Marker Line (at 66.6%) */}
-                <div
-                  className="absolute left-2/3 -top-1 -bottom-1 w-0.5 bg-white shadow-lg shadow-white/80 z-10 flex flex-col items-center justify-between pointer-events-none"
-                >
+                {/* Center Bell Marker Line (at 66.6%) */}
+                <div className="absolute left-2/3 -top-1 -bottom-1 w-0.5 bg-white shadow-lg shadow-white/80 z-10 flex flex-col items-center justify-between pointer-events-none">
                   <div className="w-2 h-2 rounded-full bg-white -mt-0.5" />
                   <div className="w-2 h-2 rounded-full bg-white -mb-0.5" />
                 </div>
               </div>
 
-              {/* Labels beneath the timeline */}
-              <div className="flex items-center justify-between text-xs font-mono-numbers text-slate-400 px-1 pt-2">
+              {/* Milestone labels aligned beneath the bar */}
+              <div className="flex items-center justify-between text-xs font-mono-numbers text-slate-400 px-1 pt-2.5">
                 <div>
-                  <span className="text-slate-500 block text-[10px]">Abre Caja</span>
+                  <span className="text-slate-500 block text-[10px]">Abre Caja (-60m)</span>
                   <span className="text-slate-200 font-bold">{boxCalculation.boxStartLocal}</span>
                 </div>
                 <div className="text-center">
                   <span className="text-cyan-400 block text-[10px] font-semibold">Campana de Apertura (0m)</span>
-                  <span className="text-white font-bold px-2 py-0.5 rounded bg-cyan-950 border border-cyan-800/80">
+                  <span className="text-white font-bold px-2.5 py-0.5 rounded bg-cyan-950 border border-cyan-800">
                     {boxCalculation.marketOpenLocal}
                   </span>
                 </div>
                 <div className="text-right">
-                  <span className="text-slate-500 block text-[10px]">Cierra Caja</span>
+                  <span className="text-slate-500 block text-[10px]">Cierra Caja (+30m)</span>
                   <span className="text-slate-200 font-bold">{boxCalculation.boxEndLocal}</span>
                 </div>
               </div>
             </div>
 
-            {/* Out-of-range helper indicators if current time is not inside the box */}
+            {/* Clean contextual indicator if currently outside box */}
             {!sessionProgress.isInsideBox && (
-              <div className="p-3 rounded-lg bg-slate-950/70 border border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2 text-slate-300">
+              <div className="mt-2 p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-slate-300">
+                <div className="flex items-center gap-2">
                   <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
                   <span>
-                    Tu hora actual ({sessionProgress.userNowTimeFormatted.slice(0, 5)}) está{' '}
-                    <strong className="text-amber-300 font-semibold">fuera de rango</strong>.
                     {sessionProgress.status === 'BEFORE_BOX'
-                      ? ' La caja abrirá más tarde.'
-                      : ' La sesión de hoy ya ha transcurrido.'}
+                      ? `Hora evaluada (${sessionProgress.userNowTimeFormatted.slice(0, 5)}): Previa a la caja. Inicia a las ${boxCalculation.boxStartLocal}.`
+                      : `Hora evaluada (${sessionProgress.userNowTimeFormatted.slice(0, 5)}): Posterior al cierre (${boxCalculation.boxEndLocal}). Caja completada.`}
                   </span>
                 </div>
-                <span className="text-slate-400 font-mono-numbers">
-                  Próxima apertura oficial en: {sessionProgress.countdownToOpenText}
+                <span className="text-cyan-400 font-mono-numbers font-medium shrink-0">
+                  {sessionProgress.primaryCountdownLabel} {sessionProgress.primaryCountdownValue}
                 </span>
               </div>
             )}
+          </div>
 
-            {/* ─── Simulation & Testing Toolbar (For easy verification of 08:00, 10:00, 12:00) ─── */}
-            <div className="p-4 rounded-xl bg-slate-950/90 border border-slate-800/90 space-y-3 mt-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
-                  <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-                  Simulador de Horas (Prueba los ejemplos de tu consulta):
+          {/* Integrated Simulator Cockpit */}
+          <div className="p-4 sm:p-5 rounded-xl bg-slate-950/80 border border-slate-800/90 space-y-4">
+            {/* Simulator Header */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-850">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Sliders className="w-4 h-4 text-cyan-400" />
+                <h3 className="text-xs font-bold text-white uppercase tracking-wider">
+                  Simulador de Horas y Pruebas
+                </h3>
+                <span className="text-[11px] text-slate-400">
+                  (Momentos clave adaptados a {selectedMarket.tradingViewLabel})
                 </span>
-                {isSimulationMode && (
-                  <button
-                    type="button"
-                    onClick={() => setIsSimulationMode(false)}
-                    className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    <span>Volver a Hora Real en Vivo</span>
-                  </button>
-                )}
               </div>
-
-              {/* Quick preset buttons */}
-              <div className="flex flex-wrap items-center gap-2">
-                {/* En vivo */}
+              {isSimulationMode ? (
                 <button
                   type="button"
                   onClick={() => setIsSimulationMode(false)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
-                    !isSimulationMode
-                      ? 'bg-cyan-600 text-white shadow-sm'
-                      : 'bg-slate-900 text-slate-400 border border-slate-800 hover:bg-slate-800'
-                  }`}
+                  className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1.5 cursor-pointer font-medium self-start sm:self-auto"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Hora Real en Vivo</span>
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Restablecer a Hora Real en Vivo</span>
                 </button>
-
-                {/* Preset 08:00 */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsSimulationMode(true);
-                    setSimulatedMinutes(480); // 08:00
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-mono-numbers transition-all cursor-pointer ${
-                    isSimulationMode && simulatedMinutes === 480
-                      ? 'bg-amber-600 text-white font-bold'
-                      : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'
-                  }`}
-                >
-                  08:00 AM (Fuera de rango)
-                </button>
-
-                {/* Preset 10:00 */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsSimulationMode(true);
-                    setSimulatedMinutes(600); // 10:00
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-mono-numbers transition-all cursor-pointer ${
-                    isSimulationMode && simulatedMinutes === 600
-                      ? 'bg-cyan-600 text-white font-bold'
-                      : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'
-                  }`}
-                >
-                  10:00 AM (En rango - Pre-apertura)
-                </button>
-
-                {/* Preset 10:30 (Open) */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsSimulationMode(true);
-                    setSimulatedMinutes(630); // 10:30
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-mono-numbers transition-all cursor-pointer ${
-                    isSimulationMode && simulatedMinutes === 630
-                      ? 'bg-emerald-600 text-white font-bold'
-                      : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'
-                  }`}
-                >
-                  10:30 AM (Campana Apertura)
-                </button>
-
-                {/* Preset 10:45 (Post-open) */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsSimulationMode(true);
-                    setSimulatedMinutes(645); // 10:45
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-mono-numbers transition-all cursor-pointer ${
-                    isSimulationMode && simulatedMinutes === 645
-                      ? 'bg-emerald-600 text-white font-bold'
-                      : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'
-                  }`}
-                >
-                  10:45 AM (En rango - Post-apertura)
-                </button>
-
-                {/* Preset 12:00 */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsSimulationMode(true);
-                    setSimulatedMinutes(720); // 12:00
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-mono-numbers transition-all cursor-pointer ${
-                    isSimulationMode && simulatedMinutes === 720
-                      ? 'bg-slate-700 text-white font-bold'
-                      : 'bg-slate-900 text-slate-300 border border-slate-800 hover:bg-slate-800'
-                  }`}
-                >
-                  12:00 PM (Fuera de rango)
-                </button>
-              </div>
-
-              {/* Slider for continuous testing */}
-              {isSimulationMode && (
-                <div className="pt-2 space-y-1">
-                  <div className="flex items-center justify-between text-xs text-slate-400">
-                    <span>Ajuste fino de hora:</span>
-                    <span className="font-mono-numbers font-bold text-cyan-300">
-                      {formatMinutesToTime(simulatedMinutes)}
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1439"
-                    step="5"
-                    value={simulatedMinutes}
-                    onChange={(e) => setSimulatedMinutes(parseInt(e.target.value, 10))}
-                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
-                  />
-                </div>
+              ) : (
+                <span className="text-[11px] text-slate-500 hidden sm:inline">
+                  Haz clic en cualquier momento para validar el comportamiento
+                </span>
               )}
             </div>
 
+            {/* Presets Grid: 6 clean, uniform cards */}
+            <div>
+              <span className="text-[11px] text-slate-400 font-medium block mb-2">
+                Accesos rápidos calculados para tu zona:
+              </span>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+                {/* Preset 0: Live Real-time */}
+                <button
+                  type="button"
+                  onClick={() => setIsSimulationMode(false)}
+                  className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                    !isSimulationMode
+                      ? 'bg-emerald-950/50 border-emerald-400 shadow-sm shadow-emerald-950/40'
+                      : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:bg-slate-850 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-slate-400 font-semibold uppercase">Ahora</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  </div>
+                  <span className="text-sm font-bold font-mono-numbers text-white my-0.5">
+                    En Vivo
+                  </span>
+                  <span className="text-[10px] text-emerald-400 font-medium truncate">
+                    Hora Real
+                  </span>
+                </button>
+
+                {/* 5 Dynamic Session Presets */}
+                {dynamicPresets.map((preset, idx) => {
+                  const isSelected = isSimulationMode && simulatedMinutes === preset.minutes;
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => {
+                        setIsSimulationMode(true);
+                        setSimulatedMinutes(preset.minutes);
+                      }}
+                      className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        isSelected
+                          ? preset.colorTheme === 'cyan'
+                            ? 'bg-cyan-950/60 border-cyan-400 shadow-sm shadow-cyan-950 text-white'
+                            : preset.colorTheme === 'emerald'
+                            ? 'bg-emerald-950/60 border-emerald-400 shadow-sm shadow-emerald-950 text-white'
+                            : preset.colorTheme === 'indigo'
+                            ? 'bg-indigo-950/60 border-indigo-400 shadow-sm shadow-indigo-950 text-white'
+                            : 'bg-amber-950/60 border-amber-400 shadow-sm shadow-amber-950 text-white'
+                          : 'bg-slate-900/80 border-slate-800 text-slate-300 hover:bg-slate-850 hover:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-slate-400 font-semibold uppercase truncate">
+                          {preset.categoryTag}
+                        </span>
+                        <span className="text-[9px] font-mono-numbers text-slate-500">
+                          {preset.shortLabel}
+                        </span>
+                      </div>
+                      <span className="text-sm font-bold font-mono-numbers text-cyan-300 my-0.5">
+                        {preset.timeFormatted}
+                      </span>
+                      <span className={`text-[10px] font-medium truncate ${
+                        isSelected ? 'text-white' : 'text-slate-400'
+                      }`}>
+                        {preset.statusType}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Manual Time Input & Slider for ANY custom hour */}
+            <div className="pt-3 border-t border-slate-850 grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+              <div className="md:col-span-5 flex items-center gap-2">
+                <label htmlFor="custom-sim-time" className="text-xs text-slate-400 shrink-0 font-medium">
+                  Hora manual:
+                </label>
+                <input
+                  id="custom-sim-time"
+                  type="time"
+                  value={formatMinutesToTime(simulatedMinutes)}
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      setIsSimulationMode(true);
+                      setSimulatedMinutes(timeStringToMinutes(e.target.value));
+                    }
+                  }}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono-numbers text-cyan-300 font-bold outline-none focus:border-cyan-500 cursor-pointer"
+                />
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    title="Restar 15 minutos"
+                    onClick={() => {
+                      setIsSimulationMode(true);
+                      setSimulatedMinutes((prev) => (prev - 15 + 1440) % 1440);
+                    }}
+                    className="p-1.5 rounded bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    <Minus className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    title="Sumar 15 minutos"
+                    onClick={() => {
+                      setIsSimulationMode(true);
+                      setSimulatedMinutes((prev) => (prev + 15 + 1440) % 1440);
+                    }}
+                    className="p-1.5 rounded bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="md:col-span-7 flex items-center gap-3">
+                <span className="text-[11px] text-slate-500 font-mono-numbers shrink-0">00:00</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1439"
+                  step="5"
+                  value={simulatedMinutes}
+                  onChange={(e) => {
+                    setIsSimulationMode(true);
+                    setSimulatedMinutes(parseInt(e.target.value, 10));
+                  }}
+                  className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                />
+                <span className="text-[11px] text-slate-500 font-mono-numbers shrink-0">23:59</span>
+              </div>
+            </div>
           </div>
 
         </div>
 
-        {/* ─── Multi-Market Quick Reference Table ─── */}
+        {/* ─── RESUMEN MULTI-MERCADO DINÁMICO & CONMUTADOR MANUAL ─── */}
         <div className="p-5 sm:p-6 rounded-xl bg-[#0d1322] border border-slate-800/80 space-y-4">
-          <div className="flex items-center justify-between">
+          
+          {/* Header of Multi-Market Section */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-slate-800/70">
             <div>
-              <h2 className="text-sm font-bold text-white flex items-center gap-2">
-                <span>Resumen Multi-Mercado en tu Hora Local</span>
-              </h2>
-              <p className="text-xs text-slate-400">
-                Horarios de la caja para las principales bolsas mundiales con tu zona ({formatGmtPrefix(effectiveUserOffset)})
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>Resumen Multi-Mercado</span>
+                </h2>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-semibold">
+                  {formatGmtPrefix(effectiveTableOffsetStr)}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {tableTimezoneMode === 'SYNC_USER'
+                  ? `Sincronizado dinámicamente con tu zona (${userTimezone.name})`
+                  : `Visualizando zona personalizada: ${effectiveTableTimezone.name}`}
               </p>
+            </div>
+
+            {/* Filter by Category: Bolsas vs Forex vs Todos */}
+            <div className="flex items-center gap-1.5 p-1 bg-slate-950 rounded-lg border border-slate-800 text-xs">
+              <button
+                type="button"
+                onClick={() => setTableMarketCategory('EXCHANGES')}
+                className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
+                  tableMarketCategory === 'EXCHANGES'
+                    ? 'bg-cyan-600 text-white font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Bolsas (6)
+              </button>
+              <button
+                type="button"
+                onClick={() => setTableMarketCategory('FOREX')}
+                className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
+                  tableMarketCategory === 'FOREX'
+                    ? 'bg-cyan-600 text-white font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Forex (4)
+              </button>
+              <button
+                type="button"
+                onClick={() => setTableMarketCategory('ALL')}
+                className={`px-2.5 py-1 rounded font-medium transition-colors cursor-pointer ${
+                  tableMarketCategory === 'ALL'
+                    ? 'bg-cyan-600 text-white font-semibold'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Todos (10)
+              </button>
             </div>
           </div>
 
+          {/* Controls: Mode Switcher (Sincronizado vs Cambiar Manualmente a Otra Zona) */}
+          <div className="p-3.5 rounded-lg bg-slate-950/80 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Settings2 className="w-4 h-4 text-cyan-400 shrink-0" />
+              <span className="text-xs font-semibold text-slate-300">Modo de visualización de la tabla:</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Option 1: Sincronizado */}
+              <button
+                type="button"
+                onClick={() => setTableTimezoneMode('SYNC_USER')}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer ${
+                  tableTimezoneMode === 'SYNC_USER'
+                    ? 'bg-cyan-950 border border-cyan-500 text-cyan-300 font-bold'
+                    : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Sincronizado con mi zona ({formatGmtPrefix(effectiveUserOffset)})
+              </button>
+
+              {/* Option 2: Cambiar manualmente a otra zona */}
+              <button
+                type="button"
+                onClick={() => setTableTimezoneMode('CUSTOM')}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all cursor-pointer ${
+                  tableTimezoneMode === 'CUSTOM'
+                    ? 'bg-cyan-950 border border-cyan-500 text-cyan-300 font-bold'
+                    : 'bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                Elegir otra zona manualmente
+              </button>
+            </div>
+          </div>
+
+          {/* Dropdown if CUSTOM timezone is active */}
+          {tableTimezoneMode === 'CUSTOM' && (
+            <div className="p-3.5 rounded-lg bg-slate-900/90 border border-cyan-800/60 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-200">
+                  Selecciona la zona horaria manual para inspeccionar la tabla:
+                </span>
+                {effectiveTableTimezone.observesDst && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomTableDst(!customTableDst)}
+                    className="text-xs text-amber-300 hover:underline flex items-center gap-1 cursor-pointer font-medium"
+                  >
+                    <Sun className="w-3.5 h-3.5 text-amber-400" />
+                    <span>DST para esta tabla: {customTableDst ? 'Activado' : 'Desactivado'}</span>
+                  </button>
+                )}
+              </div>
+
+              <div className="relative">
+                <select
+                  value={customTableTimezoneKey}
+                  onChange={(e) => setCustomTableTimezoneKey(e.target.value as TimezoneKey)}
+                  className="w-full appearance-none bg-slate-950 border border-cyan-500/60 rounded-lg px-3.5 py-2.5 text-xs text-slate-200 font-mono-numbers font-medium transition-colors cursor-pointer outline-none pr-10"
+                >
+                  {Object.values(TIMEZONE_REGISTRY).map((tz) => (
+                    <option key={tz.id} value={tz.id} className="bg-slate-900 text-slate-200">
+                      {formatGmtPrefix(tz.standardOffset)} {tz.name} ({tz.representativeCountries.map((c) => c.name).join(', ')})
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-4 h-4 text-slate-400 absolute right-3 top-3 pointer-events-none" />
+              </div>
+            </div>
+          )}
+
+          {/* Table displaying markets */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 font-medium">
                   <th className="py-2.5 px-3">Mercado / Bolsa</th>
                   <th className="py-2.5 px-3">Hora en Origen (Bolsa)</th>
-                  <th className="py-2.5 px-3">Apertura en Tu Zona ({formatGmtPrefix(effectiveUserOffset)})</th>
-                  <th className="py-2.5 px-3">Intervalo de la Caja</th>
+                  <th className="py-2.5 px-3">
+                    Apertura en la Zona ({formatGmtPrefix(effectiveTableOffsetStr)})
+                  </th>
+                  <th className="py-2.5 px-3">Intervalo de la Caja (ORB)</th>
+                  <th className="py-2.5 px-3">Estado Actual</th>
                   <th className="py-2.5 px-3 text-right">Acción</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 font-mono-numbers">
-                {quickComparison.map(({ exchange, calc }) => {
-                  const isCurrent = exchange.id === selectedMarketId;
+                {multiMarketRows.map(({ market, calc, progress }) => {
+                  const isCurrent = market.id === selectedMarketId;
                   return (
                     <tr
-                      key={exchange.id}
+                      key={market.id}
                       className={`hover:bg-slate-900/50 transition-colors ${
                         isCurrent ? 'bg-cyan-950/20' : ''
                       }`}
                     >
+                      {/* Name & Flag */}
                       <td className="py-3 px-3 font-sans font-medium text-slate-200">
                         <div className="flex items-center gap-2">
-                          <span className="text-base">{exchange.countryFlag}</span>
-                          <span>{exchange.name}</span>
+                          <span className="text-base">{market.countryFlag}</span>
+                          <div>
+                            <span className="font-semibold block">{market.name}</span>
+                            <span className="text-[10px] text-slate-400 font-mono-numbers">
+                              {market.tradingViewLabel} · {market.category === 'EXCHANGE' ? 'Bolsa de Valores' : 'Forex'}
+                            </span>
+                          </div>
                           {isCurrent && (
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800">
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800 font-mono font-bold ml-1">
                               Activo
                             </span>
                           )}
                         </div>
                       </td>
+
+                      {/* Origin time */}
                       <td className="py-3 px-3 text-slate-400 font-mono-numbers">
-                        {exchange.localOpenTime} {exchange.tradingViewLabel}
+                        {market.localOpenTime} {market.tradingViewLabel}
                       </td>
-                      <td className="py-3 px-3 font-bold text-white font-mono-numbers">
+
+                      {/* Local open time in evaluated timezone */}
+                      <td className="py-3 px-3 font-bold text-white font-mono-numbers text-sm">
                         {calc.marketOpenLocal}
                       </td>
+
+                      {/* Box Interval */}
                       <td className="py-3 px-3">
-                        <span className="px-2 py-1 rounded bg-slate-950 border border-slate-800 text-cyan-300 font-bold">
+                        <span className="px-2.5 py-1 rounded bg-slate-950 border border-slate-800 text-cyan-300 font-bold font-mono-numbers">
                           {calc.tradingViewInterval}
                         </span>
                       </td>
+
+                      {/* Real-time Status Badge */}
+                      <td className="py-3 px-3">
+                        {progress.isInsideBox ? (
+                          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-sans font-semibold bg-emerald-950/80 border border-emerald-800 text-emerald-300">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                            {progress.status === 'IN_BOX_PRE_OPEN' ? 'En Caja (Pre)' : 'En Caja (Post)'}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-sans text-slate-400 bg-slate-950 border border-slate-800">
+                            <span>Fuera de rango</span>
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Actions */}
                       <td className="py-3 px-3 text-right">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedMarketId(exchange.id);
-                            handleCopyInterval(calc.tradingViewInterval);
-                          }}
-                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-sans font-medium transition-colors cursor-pointer inline-flex items-center gap-1"
-                        >
-                          <Copy className="w-3 h-3" />
-                          <span>Copiar</span>
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedMarketId(market.id);
+                              handleCopyInterval(calc.tradingViewInterval);
+                            }}
+                            className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-sans font-medium transition-colors cursor-pointer inline-flex items-center gap-1"
+                            title="Seleccionar este mercado y copiar intervalo"
+                          >
+                            <Copy className="w-3 h-3" />
+                            <span>Copiar</span>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1172,12 +1563,14 @@ export default function App() {
         {/* ─── Footer: Minimalist Technical Rationale & Clean Notes ─── */}
         <footer className="text-xs text-slate-400 border-t border-slate-800/80 pt-4 pb-6 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
+            <span>Sessions ZS</span>
+            <span>·</span>
             <span>Trading Box Strategy Calculator</span>
             <span>·</span>
-            <span>Real-Time Offset Engine</span>
+            <span>Engine v2.0</span>
           </div>
           <div className="text-slate-400 text-center sm:text-right">
-            Regla de la estrategia: Rango de 90m (-60m pre-open a +30m post-open)
+            Regla de la estrategia: Rango de 90m (-60m pre-apertura a +30m post-apertura)
           </div>
         </footer>
 
